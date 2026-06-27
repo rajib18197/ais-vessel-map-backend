@@ -1,33 +1,18 @@
-feat: add get-vessel slice and wire error handling into app
+feat: add get-vessels-in-bounds slice (bonus geospatial endpoint)
 
-get-vessel
-- Add GET /api/vessels/:mmsi with Zod param validation via validatedRoute
-- Validate mmsi as exactly 9 digits with regex before it reaches the usecase
-- Parse DB result through vesselSummarySchema instead of casting with `as` —
-  consistent with the parse-dont-validate principle used in get-all-vessels
-- Throw 404 AppError with isOperational:true so global handler exposes the
-  message in production without leaking internals
-- Add usecase tests covering found vessel, correct mmsi query, 404 shape,
-  and isOperational flag
-
-Error handling
-- Add AppError with statusCode, status, and isOperational flag;
-  Object.setPrototypeOf preserves instanceof across transpilation
-- Add ValidationError extending AppError with structured field-level details;
-  corrects prototype chain with its own setPrototypeOf call
-- Add notFoundHandler as 404 catch-all mounted after all routes
-- Add globalErrorHandler normalizing MongooseCastError, ValidationError,
-  duplicate key (11000), ZodError, and unknown errors; full details in
-  development, safe minimal response in production
-
-validate middleware
-- Add validatedRoute composing Zod validation and typed handler in one call;
-  avoids Express 5 getter-only req.query/params reassignment problem and
-  the RequestHandler contravariance issue that rules out two-middleware
-  chaining — see JSDoc for full explanation
-- InferOrUndefined conditional type gives call sites exact inferred types
-  on req.validatedQuery and req.validatedParams with no manual generics
-
-App
-- Mount notFoundHandler and globalErrorHandler in createApp() — previously
-  missing, meaning unhandled errors and 404s were not being caught
+- Add GET /api/vessels/in-bounds?swLng=&swLat=&neLng=&neLat= returning
+  all active vessels within a geographic bounding box
+- Validate query params with Zod: longitude clamped to [-180, 180],
+  latitude to [-90, 90], coerced from query strings to numbers
+- Cross-field refinements ensure swLng < neLng and swLat < neLat so
+  the bounding box is geometrically valid before hitting the DB
+- Query uses MongoDB $geoWithin $box operator with coordinates in
+  [lng, lat] order as required by GeoJSON convention
+- Filter by ACTIVE_VESSEL_WINDOW_MS so only recently seen vessels
+  are returned, consistent with get-all-vessels
+- Parse DB output through z.array(vesselSummarySchema) at the boundary
+- Add usecase tests covering result shape, empty bounds, $box filter
+  structure, active window cutoff, and correct [lng, lat] coordinate
+  ordering in the query
+- Register under /in-bounds in vessels.router.ts before /:mmsi to
+  prevent Express param shadowing
