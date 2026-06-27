@@ -9,6 +9,7 @@ import rateLimit from 'express-rate-limit';
 import { env } from './config/env.js';
 import { RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MS } from './config/constants.js';
 import { requestLogger } from './shared/middleware/request-logger.middleware.js';
+import { vesselsRouter } from './features/vessels.router.js';
 
 export function createApp(): express.Application {
   const app = express();
@@ -54,6 +55,8 @@ export function createApp(): express.Application {
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
   });
+
+  app.use('/api/vessels', vesselsRouter);
 
   return app;
 }

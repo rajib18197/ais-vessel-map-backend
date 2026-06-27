@@ -6,6 +6,8 @@ import { logger } from './shared/logger/logger.js';
 import { connectDB, disconnectDB } from './shared/db/connection.js';
 import { createApp } from './app.js';
 import { startAisFeed, stopAisFeed } from './features/ais-feed/ais-feed.bootstrap.js';
+import { registerVesselStream } from './features/stream-vessels/stream-vessels.handler';
+import { startCleanupJob, stopCleanupJob } from './features/cleanup-vessels/cleanup-vessels.job.js';
 
 /**
  * App starts here:
@@ -22,12 +24,17 @@ async function bootstrap(): Promise<void> {
   const app = createApp();
   const httpServer = createServer(app);
 
+  // Single WS server shares the HTTP server's port — no second port to manage.
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws/vessels' });
+  registerVesselStream(wss);
+
   httpServer.listen(env.PORT, () => {
     logger.info(`Server running on port ${env.PORT} (${env.NODE_ENV})`);
   });
 
   // Starts the TCP/UDP AIS feed connection
   startAisFeed();
+  startCleanupJob();
 
   process.on('unhandledRejection', (err) => {
     logger.error({ err }, 'UNHANDLED REJECTION — shutting down gracefully');
@@ -43,6 +50,10 @@ async function bootstrap(): Promise<void> {
     logger.info(`${signal} received — shutting down gracefully`);
 
     stopAisFeed();
+    stopCleanupJob();
+
+    wss.clients.forEach((client) => client.close(1001, 'Server shutting down'));
+    wss.close();
 
     httpServer.close(async () => {
       await disconnectDB();

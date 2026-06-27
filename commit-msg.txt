@@ -1,39 +1,35 @@
-feat: add config, DB layer, AIS feed pipeline, and server bootstrap
+feat: add vessel query slices, WebSocket stream, and cleanup job
 
-Config
-- Add Zod-validated env schema with fail-fast startup (env.ts)
-- Extract domain and infra constants to constants.ts:
-  HEADING_NOT_AVAILABLE, POSITION_REPORT_TYPES, STATIC_REPORT_TYPES,
-  ACTIVE_VESSEL_WINDOW_MS, STALE_VESSEL_THRESHOLD_MS, CLEANUP_INTERVAL_MS,
-  RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_REQUESTS
+get-all-vessels
+- Add GET /api/vessels returning vessels active within the last 15 min
+- Parse DB output through z.array(vesselSummarySchema) at the boundary;
+  coordinates enforced as z.tuple([z.number(), z.number()]) not z.array
+- Chain .exec() on Mongoose query for proper Promise and stack trace support
+- Add usecase tests covering empty result, active window cutoff using
+  ACTIVE_VESSEL_WINDOW_MS constant, and response shape
 
-Database
-- Add MongoDB connection with bufferCommands:false and 10s
-  serverSelectionTimeout for fail-fast startup (connection.ts)
-- Guard registerConnectionEventLogging() against duplicate listener
-  registration across reconnects
-- Derive isDBConnected() from mongoose.connection.readyState - single
-  source of truth, no local flag drift
-- Add GeoPoint tuple type to vessel.model.ts; Mongoose cannot express
-  fixed-length coordinate tuples via InferSchemaType so this is defined
-  separately and used as the validated coordinate contract
-- Add 2dsphere sparse index on location and btree index on lastSeen
+stream-vessels
+- Add WebSocket handler at /ws/vessels with ping/pong heartbeat
+  (30s interval) and dead socket termination
+- Send vessel:snapshot on connection so the map is never empty on
+  first connect — new clients receive current active vessels immediately
+- Subscribe to vessel:updated and vessel:created on the typed event bus;
+  broadcast serialized payload to all connected clients
+- Clean up heartbeat timer and event listeners on wss close to prevent
+  memory leaks
+- Add toGeoPoint() replacing toCoordinatePair(): validates coordinate
+  tuple length and guards undefined elements under noUncheckedIndexedAccess;
+  returns typed GeoPoint or null instead of raw number[]
 
-AIS feed
-- Add discriminated union VesselUpdate (VesselPositionUpdate |
-  VesselStaticUpdate) with hasPosition flag for compile-time narrowing
-- Add Zod runtime validation on raw decoder output at the external
-  boundary (parse don't validate)
-- Resolve ais-stream-decoder CJS/ESM interop at module load time;
-  throw immediately if constructor cannot be found
-- Add TCP/UDP connection service with line-buffering, auto-reconnect,
-  and clean shutdown (no EADDRINUSE on UDP restart)
-- Add applyVesselUpdate usecase: upserts vessel by MMSI, emits
-  vessel:created or vessel:updated on the typed event bus
+cleanup-vessels
+- Add background job that deletes vessels unseen for 24 hours
+- Runs once immediately on startCleanupJob() then every 30 minutes
+- Uses STALE_VESSEL_THRESHOLD_MS and CLEANUP_INTERVAL_MS from constants
+- stopCleanupJob() clears the interval cleanly for graceful shutdown
 
-App / Server
-- Add createApp() factory with helmet, CORS, hpp, compression,
-  rate limiting, and request logger; kept side-effect-free for testability
-- Add server bootstrap with graceful SIGTERM/SIGINT shutdown,
-  uncaughtException and unhandledRejection guards, and forced
-  exit after 10s timeout
+App wiring
+- Add vesselsRouter composing vessel slices under /api/vessels; in-bounds
+  registered before /:mmsi to prevent param route shadowing
+- Wire requestLogger into createApp() global middleware chain
+- Add registerVesselStream and startCleanupJob to server bootstrap
+- Add WebSocketServer on shared HTTP port at /ws/vessels path
