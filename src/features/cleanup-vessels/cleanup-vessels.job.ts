@@ -18,7 +18,6 @@ async function deleteStaleVessels(): Promise<void> {
 }
 
 export function startCleanupJob(): void {
-  // Run once immediately on start, then on interval
   void deleteStaleVessels();
   cleanupTimer = setInterval(() => void deleteStaleVessels(), CLEANUP_INTERVAL_MS);
 }

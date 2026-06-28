@@ -7,7 +7,7 @@ export async function getAllVessels(): Promise<VesselSummary[]> {
   const vessels = await Vessel.find({
     lastSeen: { $gte: new Date(Date.now() - ACTIVE_VESSEL_WINDOW_MS) },
   })
-    .select('-rawSentence -__v')
+    .select('mmsi name vesselType location sog cog heading lastSeen -_id')
     .lean()
     .exec();
 

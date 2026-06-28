@@ -133,11 +133,6 @@ function normalizeMessage(raw: RawAisMessage): VesselUpdate | null {
     classB: (CLASS_B_REPORT_TYPES as readonly number[]).includes(raw.type),
   };
 
-  // Type 24 arrives as two independent single-sentence transmissions
-  // (Part A / Part B), not a single multipart group — each carries a
-  // disjoint subset of fields. Branching on partNum makes that explicit
-  // instead of relying on the absent half's fields happening to be
-  // undefined, which only works by coincidence for every other type.
   const isType24 = raw.type === 24;
   const isType24PartA = isType24 && raw.partNum === 0;
   const isType24PartB = isType24 && raw.partNum === 1;
@@ -153,11 +148,6 @@ function normalizeMessage(raw: RawAisMessage): VesselUpdate | null {
     const trimmedCallsign = raw.callsign?.trim();
     if (trimmedCallsign) base.callsign = trimmedCallsign;
 
-    // Schema fields dimA-D map to the decoder's bow/stern/port/starboard
-    // axes. Auxiliary craft carry a mothershipMMSI instead of dimensions
-    // in Part B (see ais-stream-decoder's isAuxiliaryCraft branch) — we
-    // don't have a schema slot for that yet, so it's read into the raw
-    // schema above but intentionally not mapped onto VesselUpdateBase.
     if (raw.dimBow != null) base.dimA = raw.dimBow;
     if (raw.dimStern != null) base.dimB = raw.dimStern;
     if (raw.dimPort != null) base.dimC = raw.dimPort;

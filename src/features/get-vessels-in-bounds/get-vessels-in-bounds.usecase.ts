@@ -19,7 +19,7 @@ export async function getVesselsInBounds(bounds: BoundsOptions): Promise<VesselS
       },
     },
   })
-    .select('-rawSentence -__v')
+    .select('mmsi name vesselType location sog cog heading lastSeen')
     .lean();
 
   return z.array(vesselSummarySchema).parse(vessels);

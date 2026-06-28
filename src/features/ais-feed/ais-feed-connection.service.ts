@@ -17,8 +17,6 @@ export function createAisFeedConnection(
   let stopped = false;
   let reconnectTimer: NodeJS.Timeout | null = null;
 
-  // Filters exact-duplicate raw sentences (the same broadcast relayed by
-  // more than one receiving station) before they ever reach the decoder.
   const deduper = createSentenceDeduper();
 
   function handleLine(line: string): void {

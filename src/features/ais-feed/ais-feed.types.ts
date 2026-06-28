@@ -1,11 +1,3 @@
-/**
- * Domain-level representation of a decoded AIS message, normalized away
- * from the raw `ais-stream-decoder` wire format. This is intentionally a
- * discriminated union on `hasPosition` rather than one big optional bag —
- * a position update is *required* to carry `lat`/`lon`, and the type
- * system should make that fact impossible to violate at any call site.
- */
-
 export interface VesselUpdateBase {
   mmsi: number;
   name?: string;

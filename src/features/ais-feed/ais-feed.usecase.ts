@@ -3,15 +3,6 @@ import { vesselEmitter } from '../../shared/events/vessel.emitter.js';
 import { logger } from '../../shared/logger/logger.js';
 import type { VesselUpdate } from './ais-feed.types.js';
 
-/**
- * Fields we are willing to $set on a Vessel document, mirrored from the
- * schema's own field names. This is intentionally a plain object type
- * (not VesselDoc itself) because we only ever set a subset of fields per
- * update and never touch `mmsi`, `_id`, or the timestamp fields directly —
- * Mongoose owns those. Every value is optional because a given update may
- * only carry a fragment of the vessel's full state (e.g. a position report
- * has no callsign; a static report has no coordinates).
- */
 interface VesselSetFields {
   lastSeen: Date;
   rawSentence: string;

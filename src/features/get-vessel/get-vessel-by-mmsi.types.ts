@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { Types } from 'mongoose';
 
 const geoPointSchema = z.object({
   type: z.literal('Point'),

@@ -14,16 +14,12 @@
  */
 
 export interface SentenceDeduperOptions {
-  /** How long a sentence is remembered before it can be seen again as "new". */
   windowMs: number;
-  /** Hard cap on tracked sentences, to bound memory under sustained high throughput. */
   maxEntries: number;
 }
 
 export interface SentenceDeduper {
-  /** Returns true if this exact line was already seen within the window. */
   isDuplicate: (line: string) => boolean;
-  /** Number of sentences currently tracked (for diagnostics/tests). */
   size: () => number;
 }
 
@@ -37,18 +33,9 @@ export function createSentenceDeduper(
 ): SentenceDeduper {
   const { windowMs, maxEntries } = { ...DEFAULT_OPTIONS, ...options };
 
-  // Map preserves insertion order in JS, which lets us evict the oldest
-  // entry in O(1) via the iterator without a separate queue structure.
   const seenAt = new Map<string, number>();
 
   function evictExpired(now: number): void {
-    // forEach (not for...of) so this works under any target without
-    // --downlevelIteration — Map.prototype.forEach has been available
-    // since ES5, unlike the Map iterator protocol. We collect expired
-    // keys first and delete after, rather than deleting mid-callback:
-    // mutating a Map while forEach is walking it is well-defined for
-    // deletions of already-visited keys, but collecting first keeps the
-    // eviction logic obviously correct without relying on that guarantee.
     const expiredKeys: string[] = [];
     seenAt.forEach((timestamp, line) => {
       if (now - timestamp > windowMs) {
@@ -63,9 +50,6 @@ export function createSentenceDeduper(
 
   function evictOverCapacity(): void {
     while (seenAt.size > maxEntries) {
-      // forEach again, for the same reason as evictExpired: avoids
-      // depending on the Map iterator protocol (.keys()/.entries()),
-      // which needs an ES2015+ lib even outside of for...of contexts.
       let oldestKey: string | undefined;
       seenAt.forEach((_timestamp, line) => {
         if (oldestKey === undefined) oldestKey = line;
