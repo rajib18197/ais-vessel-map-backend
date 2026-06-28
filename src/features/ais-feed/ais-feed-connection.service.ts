@@ -1,6 +1,7 @@
 import net from 'node:net';
 import dgram from 'node:dgram';
 import { logger } from '../../shared/logger/logger.js';
+import { createSentenceDeduper } from './ais-feed-dedup.service.js';
 import type { AisFeedConfig } from './ais-feed.types.js';
 
 export interface AisFeedConnection {
@@ -15,6 +16,15 @@ export function createAisFeedConnection(
   let socket: net.Socket | dgram.Socket | null = null;
   let stopped = false;
   let reconnectTimer: NodeJS.Timeout | null = null;
+
+  // Filters exact-duplicate raw sentences (the same broadcast relayed by
+  // more than one receiving station) before they ever reach the decoder.
+  const deduper = createSentenceDeduper();
+
+  function handleLine(line: string): void {
+    if (deduper.isDuplicate(line)) return;
+    onLine(line);
+  }
 
   function start(): void {
     stopped = false;
@@ -37,7 +47,7 @@ export function createAisFeedConnection(
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? '';
       for (const line of lines) {
-        if (line.trim()) onLine(line.trim());
+        if (line.trim()) handleLine(line.trim());
       }
     });
 
@@ -46,7 +56,7 @@ export function createAisFeedConnection(
     });
 
     tcpSocket.on('close', () => {
-      logger.warn('AIS TCP feed connection closed');
+      logger.warn({}, 'AIS TCP feed connection closed');
       scheduleReconnect();
     });
   }
@@ -58,7 +68,7 @@ export function createAisFeedConnection(
     udpSocket.on('message', (msg: Buffer, _rinfo: dgram.RemoteInfo) => {
       const text = msg.toString('utf8');
       for (const line of text.split(/\r?\n/)) {
-        if (line.trim()) onLine(line.trim());
+        if (line.trim()) handleLine(line.trim());
       }
     });
 
@@ -73,7 +83,7 @@ export function createAisFeedConnection(
 
     udpSocket.on('close', () => {
       if (!stopped && socket === null) {
-        logger.warn('AIS UDP socket closed unexpectedly');
+        logger.warn({}, 'AIS UDP socket closed unexpectedly');
       }
     });
 
@@ -97,7 +107,7 @@ export function createAisFeedConnection(
       socket.destroy();
     } else if (socket) {
       try {
-        const udpSocket = socket as dgram.Socket;
+        const udpSocket = socket;
         udpSocket.close();
       } catch {
         /* already closed */

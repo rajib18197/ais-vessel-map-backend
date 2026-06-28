@@ -8,7 +8,7 @@ let connection: AisFeedConnection | null = null;
 
 export function startAisFeed(): void {
   if (!env.AIS_FEED_HOST || !env.AIS_FEED_PORT) {
-    logger.warn('AIS_FEED_HOST/PORT not configured — skipping AIS feed connection');
+    logger.warn({}, 'AIS_FEED_HOST/PORT not configured — skipping AIS feed connection');
     return;
   }
 
@@ -24,7 +24,6 @@ export function startAisFeed(): void {
       reconnectDelayMs: env.AIS_FEED_RECONNECT_DELAY_MS,
     },
     (line) => {
-      // console.log(line, 17167);
       decoder.write(line);
     },
   );

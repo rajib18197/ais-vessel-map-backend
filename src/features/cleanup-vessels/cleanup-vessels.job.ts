@@ -1,6 +1,6 @@
-import { CLEANUP_INTERVAL_MS, STALE_VESSEL_THRESHOLD_MS } from '../../config/constants';
-import { Vessel } from '../../shared/db/models/vessel.model';
-import { logger } from '../../shared/logger/logger';
+import { CLEANUP_INTERVAL_MS, STALE_VESSEL_THRESHOLD_MS } from '../../config/constants.js';
+import { Vessel } from '../../shared/db/models/vessel.model.js';
+import { logger } from '../../shared/logger/logger.js';
 
 let cleanupTimer: NodeJS.Timeout | null = null;
 
