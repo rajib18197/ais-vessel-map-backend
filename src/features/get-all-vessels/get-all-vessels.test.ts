@@ -15,12 +15,15 @@ const mockVessel = {
   lastSeen: new Date(),
 };
 
-function mockFind(resolveWith: unknown[]) {
+function mockFind(resolveWith: unknown) {
   (Vessel.find as jest.Mock).mockReturnValue({
-    select: () => ({ lean: () => Promise.resolve(resolveWith) }),
+    select: () => ({
+      lean: () => ({
+        exec: () => Promise.resolve(resolveWith),
+      }),
+    }),
   });
 }
-
 describe('getAllVessels usecase', () => {
   beforeEach(() => jest.clearAllMocks());
 

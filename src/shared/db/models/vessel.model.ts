@@ -7,7 +7,6 @@ export type GeoPoint = {
 
 const VesselSchema = new Schema(
   {
-    // ── Required fields (per spec) ───────────────────────────────────────────
     mmsi: { type: String, required: true, unique: true },
     name: { type: String, default: null },
     location: {
@@ -25,7 +24,7 @@ const VesselSchema = new Schema(
     cog: { type: Number, default: null },
     heading: { type: Number, default: null },
     vesselType: { type: Number, default: null },
-    // ── UX fields ────────────────────────────────────────────────────────────
+
     navStatus: { type: Number, default: null },
     rot: { type: Number, default: null },
     callsign: { type: String, default: null },
@@ -41,7 +40,7 @@ const VesselSchema = new Schema(
     dimC: { type: Number, default: null },
     dimD: { type: Number, default: null },
     classB: { type: Boolean, default: false },
-    // ── Meta ─────────────────────────────────────────────────────────────────
+
     lastSeen: { type: Date, default: Date.now },
     rawSentence: { type: String, default: null },
   },

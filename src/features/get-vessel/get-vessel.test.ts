@@ -4,7 +4,7 @@ import { AppError } from '../../shared/errors/app.error.js';
 
 jest.mock('../../shared/db/models/vessel.model.js');
 
-const mockVessel = {
+const defaultMockVessel = {
   mmsi: '123456789',
   name: 'Test Vessel',
   vesselType: 70,
@@ -12,8 +12,27 @@ const mockVessel = {
   sog: 12.5,
   cog: 180,
   heading: 182,
+  navStatus: null,
+  rot: null,
+  callsign: null,
+  imo: null,
+  destination: null,
+  etaMonth: null,
+  etaDay: null,
+  etaHour: null,
+  etaMinute: null,
+  draught: null,
+  dimA: null,
+  dimB: null,
+  dimC: null,
+  dimD: null,
+  classB: false,
   lastSeen: new Date(),
 };
+
+function createMockVessel(overrides: Partial<typeof defaultMockVessel> = {}) {
+  return { ...defaultMockVessel, ...overrides };
+}
 
 function mockFindOne(resolveWith: unknown) {
   (Vessel.findOne as jest.Mock).mockReturnValue({
@@ -25,7 +44,7 @@ describe('getVesselByMmsi usecase', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('returns the vessel when found', async () => {
-    mockFindOne(mockVessel);
+    mockFindOne(createMockVessel());
 
     const result = await getVesselByMmsi('123456789');
 
@@ -37,7 +56,7 @@ describe('getVesselByMmsi usecase', () => {
   });
 
   it('queries by the correct mmsi', async () => {
-    mockFindOne(mockVessel);
+    mockFindOne(createMockVessel());
 
     await getVesselByMmsi('123456789');
 
