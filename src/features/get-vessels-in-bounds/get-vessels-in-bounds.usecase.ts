@@ -12,6 +12,7 @@ export async function getVesselsInBounds(bounds: BoundsOptions): Promise<VesselS
     lastSeen: { $gte: new Date(Date.now() - ACTIVE_VESSEL_WINDOW_MS) },
     location: {
       $geoWithin: {
+        // MongoDB geospatial queries use [longitude, latitude] order.
         $box: [
           [bounds.swLng, bounds.swLat],
           [bounds.neLng, bounds.neLat],

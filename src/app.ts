@@ -16,6 +16,7 @@ import { notFoundHandler } from './shared/errors/not-found.error.js';
 export function createApp(): express.Application {
   const app = express();
 
+  // Trust the reverse proxy when the app runs behind one.
   app.set('trust proxy', 1);
 
   // 1) GLOBAL MIDDLEWARES
@@ -36,12 +37,15 @@ export function createApp(): express.Application {
 
   // Prevent parameter pollution
   app.use(hpp());
+
+  // Compress responses to reduce network usage.
   app.use(compression());
 
   // Development logging
   if (env.NODE_ENV === 'development') {
     app.use(morgan('dev'));
   }
+
   app.use(requestLogger);
 
   // Limit requests from same API
@@ -52,8 +56,10 @@ export function createApp(): express.Application {
     legacyHeaders: false,
     message: { status: 'error', message: 'Too many requests, please try again later.' },
   });
+
   app.use('/api', apiLimiter);
 
+  // Simple endpoint to check if the server is running.
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
   });

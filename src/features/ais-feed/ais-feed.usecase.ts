@@ -31,6 +31,7 @@ interface VesselSetFields {
 
 export async function applyVesselUpdate(update: VesselUpdate, rawSentence: string): Promise<void> {
   try {
+    // Build only the fields that are present in the incoming update.
     const setFields: VesselSetFields = {
       lastSeen: update.receivedAt,
       rawSentence,
@@ -64,6 +65,7 @@ export async function applyVesselUpdate(update: VesselUpdate, rawSentence: strin
     if (update.dimD != null) setFields.dimD = update.dimD;
     if (update.classB != null) setFields.classB = update.classB;
 
+    // Create a new vessel or update the existing one using its MMSI.
     const result = await Vessel.findOneAndUpdate(
       { mmsi: String(update.mmsi) },
       { $set: setFields },

@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import dns from 'node:dns';
 import { logger } from '../logger/logger.js';
 
+// Register MongoDB event listeners only once.
 let listenersRegistered = false;
 
 export interface ConnectDBOptions {
@@ -18,9 +19,12 @@ export async function connectDB(uri: string, options?: ConnectDBOptions): Promis
     logger.warn(
       'Using public DNS resolvers (8.8.8.8, 1.1.1.1) — this mutates the global process DNS config',
     );
+
+    // Use public DNS servers when the environment has DNS resolution issues.
     dns.setServers(['8.8.8.8', '1.1.1.1']);
   }
 
+  // Fail fast instead of buffering queries while the database is disconnected.
   mongoose.set('bufferCommands', false);
 
   registerConnectionEventLogging();

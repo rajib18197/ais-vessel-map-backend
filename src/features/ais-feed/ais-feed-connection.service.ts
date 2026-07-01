@@ -17,6 +17,7 @@ export function createAisFeedConnection(
   let stopped = false;
   let reconnectTimer: NodeJS.Timeout | null = null;
 
+  // Skip duplicate AIS sentences before processing them.
   const deduper = createSentenceDeduper();
 
   function handleLine(line: string): void {
@@ -24,9 +25,15 @@ export function createAisFeedConnection(
     onLine(line);
   }
 
+  // Start a TCP or UDP connection based on the application config.
   function start(): void {
     stopped = false;
-    config.protocol === 'tcp' ? startTcp() : startUdp();
+
+    if (config.protocol === 'tcp') {
+      startTcp();
+    } else {
+      startUdp();
+    }
   }
 
   function startTcp(): void {
@@ -40,6 +47,7 @@ export function createAisFeedConnection(
       logger.info({ host: config.host, port: config.port }, 'AIS TCP feed connected');
     });
 
+    // Build complete lines from incoming TCP data chunks.
     tcpSocket.on('data', (chunk: string) => {
       buffer += chunk;
       const lines = buffer.split(/\r?\n/);
@@ -63,7 +71,7 @@ export function createAisFeedConnection(
     const udpSocket: dgram.Socket = dgram.createSocket('udp4');
     socket = udpSocket;
 
-    udpSocket.on('message', (msg: Buffer, _rinfo: dgram.RemoteInfo) => {
+    udpSocket.on('message', (msg: Buffer) => {
       const text = msg.toString('utf8');
       for (const line of text.split(/\r?\n/)) {
         if (line.trim()) handleLine(line.trim());
@@ -90,6 +98,7 @@ export function createAisFeedConnection(
     });
   }
 
+  // Try to reconnect after a delay when the connection is lost.
   function scheduleReconnect(): void {
     if (stopped || reconnectTimer) return;
     reconnectTimer = setTimeout(() => {
@@ -98,6 +107,7 @@ export function createAisFeedConnection(
     }, config.reconnectDelayMs);
   }
 
+  // Close the socket and stop any future reconnect attempts.
   function stop(): void {
     stopped = true;
     if (reconnectTimer) clearTimeout(reconnectTimer);

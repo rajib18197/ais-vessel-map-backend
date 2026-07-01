@@ -4,6 +4,7 @@ import { createAisFeedConnection, type AisFeedConnection } from './ais-feed-conn
 import { createAisDecoderStream } from './ais-feed-decoder.service.js';
 import { applyVesselUpdate } from './ais-feed.usecase.js';
 
+// Keep the current AIS connection so we can stop it later.
 let connection: AisFeedConnection | null = null;
 
 export function startAisFeed(): void {
@@ -12,6 +13,7 @@ export function startAisFeed(): void {
     return;
   }
 
+  // Decode incoming AIS messages and update vessel data.
   const decoder = createAisDecoderStream((update, rawSentence) => {
     void applyVesselUpdate(update, rawSentence);
   });
@@ -24,6 +26,7 @@ export function startAisFeed(): void {
       reconnectDelayMs: env.AIS_FEED_RECONNECT_DELAY_MS,
     },
     (line) => {
+      // Send each received line to the decoder.
       decoder.write(line);
     },
   );
@@ -32,6 +35,7 @@ export function startAisFeed(): void {
 }
 
 export function stopAisFeed(): void {
+  // Close the connection when the application shuts down.
   connection?.stop();
   connection = null;
 }

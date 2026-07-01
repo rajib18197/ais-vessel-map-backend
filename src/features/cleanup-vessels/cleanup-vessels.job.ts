@@ -4,6 +4,7 @@ import { logger } from '../../shared/logger/logger.js';
 
 let cleanupTimer: NodeJS.Timeout | null = null;
 
+// Remove vessels that have not sent updates for a long time.
 async function deleteStaleVessels(): Promise<void> {
   try {
     const cutoff = new Date(Date.now() - STALE_VESSEL_THRESHOLD_MS);
@@ -17,6 +18,7 @@ async function deleteStaleVessels(): Promise<void> {
   }
 }
 
+// Run cleanup now and then keep running it on a fixed interval.
 export function startCleanupJob(): void {
   void deleteStaleVessels();
   cleanupTimer = setInterval(() => void deleteStaleVessels(), CLEANUP_INTERVAL_MS);

@@ -47,8 +47,13 @@ const VesselSchema = new Schema(
   { timestamps: true },
 );
 
+// Support map queries that search vessels by coordinates.
 VesselSchema.index({ location: '2dsphere' }, { sparse: true });
+
+// Speed up cleanup jobs that remove old vessels.
 VesselSchema.index({ lastSeen: 1 });
+
+// Speed up filtering vessels by navigation status.
 VesselSchema.index({ navStatus: 1 });
 
 export type VesselDoc = InferSchemaType<typeof VesselSchema>;

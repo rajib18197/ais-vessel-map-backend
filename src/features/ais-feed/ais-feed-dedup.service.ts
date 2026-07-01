@@ -35,25 +35,30 @@ export function createSentenceDeduper(
 
   const seenAt = new Map<string, number>();
 
+  // Remove old entries that are outside the dedupe time window.
   function evictExpired(now: number): void {
     const expiredKeys: string[] = [];
+
     seenAt.forEach((timestamp, line) => {
       if (now - timestamp > windowMs) {
         expiredKeys.push(line);
       }
     });
+
     for (let i = 0; i < expiredKeys.length; i += 1) {
       const key = expiredKeys[i];
       if (key !== undefined) seenAt.delete(key);
     }
   }
 
+  // Keep the cache size under the configured limit.
   function evictOverCapacity(): void {
     while (seenAt.size > maxEntries) {
       let oldestKey: string | undefined;
       seenAt.forEach((_timestamp, line) => {
         if (oldestKey === undefined) oldestKey = line;
       });
+
       if (oldestKey === undefined) break;
       seenAt.delete(oldestKey);
     }

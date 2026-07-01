@@ -43,6 +43,7 @@ async function bootstrap(): Promise<void> {
 
   let shuttingDown = false;
 
+  // Stop services and close connections before exiting the process.
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -52,6 +53,7 @@ async function bootstrap(): Promise<void> {
     stopAisFeed();
     stopCleanupJob();
 
+    // Tell connected clients that the server is shutting down.
     wss.clients.forEach((client) => client.close(1001, 'Server shutting down'));
     wss.close();
 
@@ -72,7 +74,7 @@ async function bootstrap(): Promise<void> {
 }
 
 bootstrap().catch((err) => {
-  console.error('Failed to start server:', err);
+  logger.error({ err }, 'Failed to start server');
   process.exit(1);
 });
 

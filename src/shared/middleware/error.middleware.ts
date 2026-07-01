@@ -23,11 +23,13 @@ function handleValidationErrorDB(err: MongooseError.ValidationError): AppError {
   return new AppError(message, 400);
 }
 
+// Convert Zod validation errors into our application error format.
 function handleZodError(err: ZodError): AppError {
   const message = err.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('. ');
   return new AppError(message, 400);
 }
 
+// Send detailed error information while developing.
 function sendErrorDev(err: AppError, _req: Request, res: Response): void {
   res.status(err.statusCode).json({
     status: err.status,
@@ -36,6 +38,7 @@ function sendErrorDev(err: AppError, _req: Request, res: Response): void {
   });
 }
 
+// Hide internal details and send safe messages in production.
 function sendErrorProd(err: AppError, _req: Request, res: Response): void {
   if (err.isOperational) {
     res.status(err.statusCode).json({

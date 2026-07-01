@@ -15,15 +15,7 @@ import {
   CLASS_B_REPORT_TYPES,
 } from '../../config/constants.js';
 
-/* Zod Schema for incoming stream data (Idea is: Parse, Don't Validate)
- We use .passthrough() because stream decoders often append metadata fields
- we don't care about.
-
- Field names below are the *actual* `ais-stream-decoder` wire field names,
- not the schema's persisted field names — the two are deliberately
- different vocabularies, and the mapping between them happens once, in
- normalizeMessage, so nothing upstream or downstream has to know about it.
-*/
+// Validate and normalize raw AIS messages from the decoder.
 const rawAisMessageSchema = z
   .object({
     type: z.number(),
@@ -95,6 +87,7 @@ const AisDecoder = ResolvedAisDecoder;
 export function createAisDecoderStream(
   onMessage: (update: VesselUpdate, rawSentence: string) => void,
 ): AisDecoderType {
+  // Handle decoded messages and convert them into our domain model.
   const decoder = new AisDecoder();
 
   decoder.on('data', (raw: unknown) => {
@@ -119,6 +112,7 @@ export function createAisDecoderStream(
   return decoder;
 }
 
+// Convert raw decoder data into a clean VesselUpdate object.
 function normalizeMessage(raw: RawAisMessage): VesselUpdate | null {
   if (!raw.mmsi) return null;
 

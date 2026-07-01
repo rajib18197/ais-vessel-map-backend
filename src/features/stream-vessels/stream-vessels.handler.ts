@@ -21,6 +21,7 @@ interface VesselBroadcastPayload {
   lastSeen: Date;
 }
 
+// Return null if the vessel does not have valid coordinates.
 function toGeoPoint(location: VesselDoc['location']): GeoPoint | null {
   const coords = location?.coordinates;
 
@@ -34,6 +35,7 @@ function toGeoPoint(location: VesselDoc['location']): GeoPoint | null {
   return { type: 'Point', coordinates: [lon, lat] };
 }
 
+// Convert a database vessel document into the data we send to clients.
 function toPayload(vessel: VesselDoc): VesselBroadcastPayload {
   return {
     mmsi: vessel.mmsi,
@@ -48,6 +50,7 @@ function toPayload(vessel: VesselDoc): VesselBroadcastPayload {
 }
 
 export function registerVesselStream(wss: WebSocketServer): void {
+  // Periodically check that WebSocket clients are still connected.
   const heartbeatTimer = setInterval(() => {
     wss.clients.forEach((client) => {
       const socket = client as TrackedSocket;
@@ -60,6 +63,7 @@ export function registerVesselStream(wss: WebSocketServer): void {
     });
   }, HEARTBEAT_INTERVAL_MS);
 
+  // Send vessel updates to all connected WebSocket clients.
   const broadcast = (event: 'vessel:updated' | 'vessel:created', vessel: VesselDoc): void => {
     const payload = JSON.stringify({ event, data: toPayload(vessel) });
 

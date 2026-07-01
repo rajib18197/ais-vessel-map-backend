@@ -6,6 +6,7 @@ export interface VesselEvents {
   'vessel:created': (vessel: VesselDoc) => void;
 }
 
+// Add TypeScript types to EventEmitter events and listeners.
 class TypedVesselEmitter extends EventEmitter {
   emit<E extends keyof VesselEvents>(event: E, ...args: Parameters<VesselEvents[E]>): boolean {
     return super.emit(event, ...args);
@@ -20,7 +21,7 @@ class TypedVesselEmitter extends EventEmitter {
   }
 }
 
-// Singleton
+// Singleton: Shared event emitter used across the application.
 export const vesselEmitter = new TypedVesselEmitter();
 
 vesselEmitter.setMaxListeners(50);

@@ -14,13 +14,16 @@ declare global {
 }
 
 export function requestLogger(req: Request, res: Response, next: NextFunction): void {
+  // Reuse the incoming request ID or create a new one.
   const requestId = (req.headers['x-request-id'] as string | undefined) ?? randomUUID();
+
   const startedAt = process.hrtime.bigint();
 
   req.id = requestId;
   req.log = logger.child({ requestId });
   res.setHeader('x-request-id', requestId);
 
+  // Log the request after the response has been sent.
   res.on('finish', () => {
     const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
 

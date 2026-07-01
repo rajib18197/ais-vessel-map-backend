@@ -10,6 +10,7 @@ interface ValidationSchemas {
 
 type InferOrUndefined<T extends ZodType | undefined> = T extends ZodType ? z.infer<T> : undefined;
 
+// Parse and validate request data using the provided schemas.
 function parseSchemas(schemas: ValidationSchemas, req: Request) {
   const validatedQuery = schemas.query ? schemas.query.parse(req.query) : undefined;
   const validatedParams = schemas.params ? schemas.params.parse(req.params) : undefined;
@@ -18,6 +19,7 @@ function parseSchemas(schemas: ValidationSchemas, req: Request) {
   return { validatedQuery, validatedParams };
 }
 
+// Convert Zod errors into our application validation error.
 function toValidationError(err: unknown): ValidationError | unknown {
   if (!(err instanceof ZodError)) return err;
   const details = err.issues.map((issue) => ({
@@ -42,6 +44,7 @@ export function validatedRoute<S extends ValidationSchemas>(
     try {
       const { validatedQuery, validatedParams } = parseSchemas(schemas, req);
 
+      // Attach validated values so the route handler gets properly typed data.
       const narrowedReq = req as Request & {
         validatedQuery: InferOrUndefined<S['query']>;
         validatedParams: InferOrUndefined<S['params']>;

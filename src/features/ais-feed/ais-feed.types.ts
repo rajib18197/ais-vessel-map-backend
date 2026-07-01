@@ -21,7 +21,9 @@ export interface VesselUpdateBase {
 }
 
 export interface VesselPositionUpdate extends VesselUpdateBase {
+  // Used as a discriminant so TypeScript can narrow the union.
   hasPosition: true;
+
   lat: number;
   lon: number;
   sog?: number;
@@ -30,6 +32,7 @@ export interface VesselPositionUpdate extends VesselUpdateBase {
 }
 
 export interface VesselStaticUpdate extends VesselUpdateBase {
+  // Static reports do not contain latitude or longitude data.
   hasPosition: false;
 }
 
