@@ -90,6 +90,14 @@ export function registerVesselStream(wss: WebSocketServer): void {
   });
 
   wss.on('connection', async (socket: TrackedSocket, req) => {
+    logger.info(
+      {
+        ip: req.socket.remoteAddress,
+        clients: wss.clients.size,
+      },
+      'WebSocket client connected',
+    );
+
     socket.isAlive = true;
     socket.on('pong', () => {
       socket.isAlive = true;
@@ -97,6 +105,17 @@ export function registerVesselStream(wss: WebSocketServer): void {
 
     try {
       const vessels = await getAllVessels();
+
+      // const unique = new Set(vessels.map((v) => v.mmsi));
+
+      // logger.info(
+      //   {
+      //     total: vessels.length,
+      //     unique: unique.size,
+      //   },
+      //   'Sending vessel snapshot',
+      // );
+
       if (socket.readyState === socket.OPEN) {
         socket.send(JSON.stringify({ event: 'vessel:snapshot', data: vessels }));
       }
@@ -104,10 +123,11 @@ export function registerVesselStream(wss: WebSocketServer): void {
       logger.warn({ err }, 'Failed to send initial vessel snapshot to WS client');
     }
 
-    logger.info({ ip: req.socket.remoteAddress }, 'WebSocket client connected');
-
     socket.on('close', () => {
-      logger.info({ ip: req.socket.remoteAddress }, 'WebSocket client disconnected');
+      logger.info(
+        { ip: req.socket.remoteAddress, clients: wss.clients.size },
+        'WebSocket client disconnected',
+      );
     });
 
     socket.on('error', (err) => {

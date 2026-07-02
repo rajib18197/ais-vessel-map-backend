@@ -1,0 +1,138 @@
+<svg viewBox="0 0 1750 760" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <radialGradient id="bgGlow" cx="18%" cy="10%" r="45%">
+      <stop offset="0%" stop-color="#00b4d8" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#00b4d8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="mongoGlow" cx="50%" cy="40%" r="65%">
+      <stop offset="0%" stop-color="#0f3a44"/>
+      <stop offset="100%" stop-color="#0a222b"/>
+    </radialGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b7291"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1750" height="760" fill="#08131f"/>
+  <rect x="0" y="0" width="1750" height="760" fill="url(#bgGlow)"/>
+
+  <!-- Title -->
+  <text x="875" y="42" text-anchor="middle" font-size="25" font-weight="700" fill="#22c4ec">AIS Vessel Map — Backend Architecture</text>
+  <text x="875" y="68" text-anchor="middle" font-size="13.5" fill="#94a3b8">Real-time ingestion → shared MongoDB store → WebSocket broadcast, with a parallel REST read path</text>
+
+  <!-- ===== Arrows (drawn first, so boxes sit cleanly on top) ===== -->
+  <g stroke="#5b7291" stroke-width="1.8" fill="none">
+    <line x1="200" y1="143" x2="228" y2="143" marker-end="url(#arrow)"/>
+    <line x1="400" y1="143" x2="428" y2="143" marker-end="url(#arrow)"/>
+    <line x1="600" y1="143" x2="628" y2="143" marker-end="url(#arrow)"/>
+    <line x1="820" y1="143" x2="848" y2="143" marker-end="url(#arrow)"/>
+    <line x1="1040" y1="143" x2="1068" y2="143" marker-end="url(#arrow)"/>
+    <line x1="1240" y1="143" x2="1268" y2="143" marker-end="url(#arrow)"/>
+    <line x1="1450" y1="143" x2="1488" y2="143" marker-end="url(#arrow)"/>
+
+    <line x1="945" y1="176" x2="945" y2="260" marker-end="url(#arrow)"/>
+    <line x1="945" y1="400" x2="945" y2="428" marker-end="url(#arrow)"/>
+    <line x1="1090" y1="472" x2="1488" y2="463" marker-end="url(#arrow)"/>
+
+    <path d="M 690,560 C 650,470 680,380 845,330" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- Arrow labels (knockout stroke so they stay legible over crossing lines) -->
+  <g font-size="11" fill="#94a3b8" stroke="#08131f" stroke-width="4" paint-order="stroke" text-anchor="middle">
+    <text x="214" y="128">raw NMEA lines</text>
+    <text x="414" y="161">buffered lines</text>
+    <text x="614" y="128">unique lines</text>
+    <text x="834" y="161">VesselUpdate</text>
+    <text x="1054" y="128">emit event</text>
+    <text x="1254" y="161">broadcast()</text>
+    <text x="1469" y="93">WS: snapshot + live events</text>
+    <text x="945" y="222">upsert by mmsi</text>
+    <text x="945" y="416">reads active + bounds</text>
+    <text x="1290" y="450">REST: GET request · JSON response</text>
+    <text x="700" y="440">delete stale (24h+)</text>
+  </g>
+
+  <!-- ===== Step badges (cross-reference the numbered steps in docs/architecture.md §4) ===== -->
+  <g font-size="12" font-weight="700" fill="#062028" text-anchor="middle">
+    <circle cx="244" cy="96" r="11" fill="#00b4d8"/><text x="244" y="100">1</text>
+    <circle cx="444" cy="96" r="11" fill="#00b4d8"/><text x="444" y="100">2</text>
+    <circle cx="644" cy="96" r="11" fill="#00b4d8"/><text x="644" y="100">3</text>
+    <circle cx="864" cy="96" r="11" fill="#00b4d8"/><text x="864" y="100">4</text>
+  </g>
+
+  <!-- ===== Tier 1 — ingestion pipeline ===== -->
+  <g>
+    <!-- AIS Feed (external) -->
+    <rect x="40" y="110" width="160" height="66" rx="10" fill="#0d1626" stroke="#3b4a63" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="120" y="136" text-anchor="middle" font-size="14" font-weight="700" fill="#e9eff7">AIS Feed</text>
+    <text x="120" y="154" text-anchor="middle" font-size="10.5" fill="#94a3b8">external · TCP or UDP</text>
+
+    <!-- TCP/UDP Socket -->
+    <rect x="230" y="110" width="170" height="66" rx="10" fill="#101c2f" stroke="#24354c" stroke-width="1.5"/>
+    <text x="315" y="136" text-anchor="middle" font-size="13.5" font-weight="700" fill="#e9eff7">TCP / UDP Socket</text>
+    <text x="315" y="154" text-anchor="middle" font-size="10.5" fill="#94a3b8">reconstructs NMEA lines</text>
+
+    <!-- Sentence Deduper -->
+    <rect x="430" y="110" width="170" height="66" rx="10" fill="#101c2f" stroke="#24354c" stroke-width="1.5"/>
+    <text x="515" y="136" text-anchor="middle" font-size="13.5" font-weight="700" fill="#e9eff7">Sentence Deduper</text>
+    <text x="515" y="154" text-anchor="middle" font-size="10.5" fill="#94a3b8">drops repeat broadcasts</text>
+
+    <!-- AIS Decoder -->
+    <rect x="630" y="110" width="190" height="66" rx="10" fill="#101c2f" stroke="#24354c" stroke-width="1.5"/>
+    <text x="725" y="136" text-anchor="middle" font-size="13.5" font-weight="700" fill="#e9eff7">AIS Decoder</text>
+    <text x="725" y="154" text-anchor="middle" font-size="10.5" fill="#94a3b8">parses + Zod-validates</text>
+
+    <!-- Persist (Upsert) -->
+    <rect x="850" y="110" width="190" height="66" rx="10" fill="#101c2f" stroke="#24354c" stroke-width="1.5"/>
+    <text x="945" y="136" text-anchor="middle" font-size="13.5" font-weight="700" fill="#e9eff7">Persist (Upsert)</text>
+    <text x="945" y="154" text-anchor="middle" font-size="10.5" fill="#94a3b8">writes vessel by MMSI</text>
+
+    <!-- Event Emitter -->
+    <rect x="1070" y="110" width="170" height="66" rx="10" fill="#101c2f" stroke="#24354c" stroke-width="1.5"/>
+    <text x="1155" y="136" text-anchor="middle" font-size="13.5" font-weight="700" fill="#e9eff7">Event Emitter</text>
+    <text x="1155" y="154" text-anchor="middle" font-size="10.5" fill="#94a3b8">vessel:created / updated</text>
+
+    <!-- WS Broadcast -->
+    <rect x="1270" y="110" width="180" height="66" rx="10" fill="#101c2f" stroke="#24354c" stroke-width="1.5"/>
+    <text x="1360" y="136" text-anchor="middle" font-size="13.5" font-weight="700" fill="#e9eff7">WS Broadcast</text>
+    <text x="1360" y="154" text-anchor="middle" font-size="10.5" fill="#94a3b8">heartbeat + snapshot</text>
+  </g>
+
+  <!-- ===== MongoDB (signature element — the shared source of truth) ===== -->
+  <g>
+    <path d="M845,280 a100,18 0 1,0 200,0 a100,18 0 1,0 -200,0" fill="url(#mongoGlow)" stroke="#22c4ec" stroke-width="2"/>
+    <rect x="845" y="280" width="200" height="100" fill="url(#mongoGlow)"/>
+    <line x1="845" y1="280" x2="845" y2="380" stroke="#22c4ec" stroke-width="2"/>
+    <line x1="1045" y1="280" x2="1045" y2="380" stroke="#22c4ec" stroke-width="2"/>
+    <path d="M845,380 a100,18 0 0,0 200,0" fill="url(#mongoGlow)" stroke="#22c4ec" stroke-width="2"/>
+    <text x="945" y="330" text-anchor="middle" font-size="16" font-weight="700" fill="#e9eff7">MongoDB</text>
+    <text x="945" y="350" text-anchor="middle" font-size="11" fill="#a9c9d6">vessel collection</text>
+    <text x="945" y="410" text-anchor="middle" font-size="10.5" fill="#5b7291">2dsphere + lastSeen indexes</text>
+  </g>
+
+  <!-- ===== Tier 2 — REST read path ===== -->
+  <g>
+    <rect x="800" y="430" width="290" height="80" rx="10" fill="#101c2f" stroke="#24354c" stroke-width="1.5"/>
+    <text x="945" y="463" text-anchor="middle" font-size="14.5" font-weight="700" fill="#e9eff7">Express REST API</text>
+    <text x="945" y="483" text-anchor="middle" font-size="10.5" fill="#94a3b8">Zod-validated routes · rate limited</text>
+  </g>
+
+  <!-- ===== Cleanup job ===== -->
+  <g>
+    <rect x="430" y="560" width="260" height="80" rx="10" fill="#0d1626" stroke="#3b4a63" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="560" y="592" text-anchor="middle" font-size="14" font-weight="700" fill="#e9eff7">Cleanup Job</text>
+    <text x="560" y="612" text-anchor="middle" font-size="10.5" fill="#94a3b8">runs every 30 minutes</text>
+    <text x="560" y="628" text-anchor="middle" font-size="10.5" fill="#94a3b8">deletes vessels stale 24h+</text>
+  </g>
+
+  <!-- ===== Frontend (React app — the one client, two channels) ===== -->
+  <g>
+    <rect x="1490" y="110" width="200" height="390" rx="12" fill="#0e1a2c" stroke="#00b4d8" stroke-width="2"/>
+    <text x="1590" y="150" text-anchor="middle" font-size="15" font-weight="700" fill="#e9eff7">Frontend</text>
+    <text x="1590" y="170" text-anchor="middle" font-size="12" fill="#e9eff7">(React app)</text>
+    <line x1="1520" y1="190" x2="1660" y2="190" stroke="#24354c" stroke-width="1"/>
+    <text x="1590" y="215" text-anchor="middle" font-size="10.5" fill="#94a3b8">renders the live map,</text>
+    <text x="1590" y="231" text-anchor="middle" font-size="10.5" fill="#94a3b8">receives WS events,</text>
+    <text x="1590" y="247" text-anchor="middle" font-size="10.5" fill="#94a3b8">issues REST requests</text>
+  </g>
+</svg>

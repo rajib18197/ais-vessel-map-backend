@@ -1,332 +1,159 @@
-# AIS Vessel Map Backend
+# AIS Vessel Map — Backend
 
-Real-time vessel tracking backend that connects to a live AIS (Automatic Identification System) feed, decodes NMEA vessel messages, stores vessel state in MongoDB, and streams live vessel updates to connected clients over WebSocket.
+A Node.js/Express service that connects to a live AIS (Automatic Identification System) feed, decodes raw NMEA sentences into vessel positions, stores them in MongoDB, and streams updates to clients in real time over WebSocket.
 
----
+This repo is the backend half of the project. The companion frontend (React + Leaflet) consumes the REST API and WebSocket stream this service exposes.
 
-## Features
-
-- Live AIS feed ingestion (TCP or UDP)
-- Automatic AIS message decoding
-- NMEA sentence deduplication
-- MongoDB persistence with geospatial indexing
-- Real-time vessel updates via WebSocket
-- Geographic bounding-box queries
-- Automatic stale-vessel cleanup
-- Structured logging with Pino
-- Request validation with Zod
-- Graceful shutdown support
-- Unit-tested business logic
+For a deep dive into how the system fits together — data flow, database schema, API design decisions, and exactly how NMEA decoding works — see [`docs/architecture.md`](./docs/architecture.md).
 
 ---
 
-## Tech Stack
+## What it does
 
-- Node.js
-- TypeScript
-- Express
-- MongoDB
-- Mongoose
-- WebSocket (`ws`)
-- Zod
-- Pino
-- Jest
+- Opens a raw TCP or UDP connection to an AIS feed and reads NMEA `AIVDM`/`AIVDO` sentences off the wire.
+- Decodes those sentences into vessel data — MMSI, name, position, speed, course, heading, vessel type, and a good deal more.
+- Upserts each decoded update into MongoDB, keyed by MMSI, so a vessel's record is always current rather than duplicated.
+- Broadcasts every create/update over WebSocket to all connected clients, and sends a full snapshot to any client that just connected.
+- Exposes a REST API for fetching the current vessel list, a single vessel's full detail, or vessels within a map viewport.
+
+A few things worth knowing that go beyond the core requirements — AIS sentence deduplication, runtime response validation, graceful shutdown, a WebSocket heartbeat, unit-tested usecases, and more — are covered in the architecture doc rather than repeated here.
 
 ---
 
-## Requirements
+## Tech stack
 
-- Node.js v18 or higher (developed on v24.16.0)
-- MongoDB Atlas account or local MongoDB instance
-- Access to an AIS feed
+| Layer         | Choice                                                             |
+| ------------- | ------------------------------------------------------------------ |
+| Runtime       | Node.js + TypeScript                                               |
+| Web framework | Express 5                                                          |
+| Database      | MongoDB via Mongoose (2dsphere geospatial index)                   |
+| Real-time     | `ws` (native WebSocket server, sharing the HTTP server's port)     |
+| AIS decoding  | `ais-stream-decoder`                                               |
+| Validation    | Zod (env vars, incoming AIS messages, API request/response shapes) |
+| Logging       | Pino (pretty-printed in development)                               |
+| Security      | Helmet, CORS, HPP, rate limiting                                   |
+| Testing       | Jest + ts-jest                                                     |
 
 ---
 
-## Getting Started
+## Getting started
 
-### 1. Clone the Repository
+### 1. Clone and install
 
 ```bash
-git clone https://github.com/your-username/ais-vessel-map-backend.git
+git clone <this-repo-url>
 cd ais-vessel-map-backend
-```
-
-### 2. Install Dependencies
-
-```bash
 npm install
 ```
 
-### 3. Configure Environment Variables
+This project doesn't pin a Node version via `engines`, but the type definitions target a recent major version — a current Node LTS release is a safe bet. If you hit odd type errors, check `node -v` first.
 
-Create a local environment file:
+### 2. Configure environment variables
+
+Copy the example file and fill it in:
 
 ```bash
 cp .env.example .env
 ```
 
-Populate the values:
-
 ```env
+# Application
 NODE_ENV=development
 PORT=3000
-
-DATABASE_URL=mongodb+srv://...
-
 LOG_LEVEL=debug
 
+# Database — your own MongoDB instance (local or Atlas)
+DATABASE_URL=mongodb+srv://<USERNAME>:<PASSWORD>@<CLUSTER>.mongodb.net/ais-vessel-map?retryWrites=true&w=majority
+
+# AIS Feed
 AIS_FEED_HOST=
 AIS_FEED_PORT=
 AIS_FEED_PROTOCOL=tcp
 AIS_FEED_RECONNECT_DELAY_MS=5000
 ```
 
-### Environment Variables
+`DATABASE_URL` is the only variable that's actually required — the process won't start without it, since environment variables are validated on boot (see the architecture doc). Everything else falls back to a sane default.
 
-| Variable                    | Description                              |
-| --------------------------- | ---------------------------------------- |
-| NODE_ENV                    | Application environment                  |
-| PORT                        | HTTP server port                         |
-| DATABASE_URL                | MongoDB connection string                |
-| LOG_LEVEL                   | Logging level                            |
-| AIS_FEED_HOST               | AIS feed hostname                        |
-| AIS_FEED_PORT               | AIS feed port                            |
-| AIS_FEED_PROTOCOL           | tcp or udp                               |
-| AIS_FEED_RECONNECT_DELAY_MS | Reconnect delay after feed disconnection |
+### 3. Connecting to the AIS feed
 
----
+Fill in `AIS_FEED_HOST` and `AIS_FEED_PORT` with the connection details you were given, and set `AIS_FEED_PROTOCOL` to whichever of `tcp` or `udp` matches. If you leave `AIS_FEED_HOST`/`AIS_FEED_PORT` blank, the server still starts and serves the API and WebSocket normally — it just logs a warning and skips connecting to the feed, so you can develop against the REST/WebSocket layer without a live feed available.
 
-### 4. Start the Development Server
+If the feed connection drops, it reconnects automatically after `AIS_FEED_RECONNECT_DELAY_MS` (5 seconds by default).
+
+### 4. Run it
 
 ```bash
-npm run dev
+npm run dev      # tsx watch — restarts on file changes
 ```
 
-The server starts on:
+The server listens on `PORT` (default `3000`), and the WebSocket endpoint shares that same port at `/ws/vessels`.
 
-```text
-http://localhost:3000
+### 5. Build and run for production
+
+```bash
+npm run build     # tsc — compiles to dist/
+npm run start     # node dist/server.js
 ```
 
-Expected startup logs:
+### 6. Tests and linting
 
-```text
-MongoDB connection established
-AIS TCP feed connected
-Server running on port 3000
-```
-
----
-
-## Available Scripts
-
-| Command              | Description                              |
-| -------------------- | ---------------------------------------- |
-| npm run dev          | Start development server with hot reload |
-| npm run build        | Compile TypeScript                       |
-| npm start            | Start the production build               |
-| npm test             | Run unit tests                           |
-| npm run lint         | Run ESLint                               |
-| npm run lint:fix     | Fix ESLint issues                        |
-| npm run format       | Format source files                      |
-| npm run format:check | Check formatting                         |
-| npm run check        | Run lint, format checks, and tests       |
-
----
-
-## AIS Feed Integration
-
-The AIS feed connection starts automatically when the application boots.
-
-Configuration is controlled through:
-
-```env
-AIS_FEED_HOST
-AIS_FEED_PORT
-AIS_FEED_PROTOCOL
-AIS_FEED_RECONNECT_DELAY_MS
-```
-
-If the feed connection drops unexpectedly, the application automatically attempts to reconnect after the configured delay.
-
-Duplicate NMEA sentences are filtered before decoding to avoid duplicate vessel updates and protect multipart AIS message assembly.
-
----
-
-## API Endpoints
-
-### Health Check
-
-```http
-GET /health
+```bash
+npm test           # jest --selectProjects unit
+npm run lint       # eslint
+npm run format:check
+npm run check      # lint + format:check + test, all together
 ```
 
 ---
 
-### Get All Active Vessels
+## API reference
 
-```http
-GET /api/vessels
-```
+All endpoints are prefixed with `/api/vessels` and rate-limited (300 requests per 15-minute window, per client). Full design rationale — validation approach, error handling, response envelope — is in [`docs/architecture.md`](./docs/architecture.md#3-api-design-decisions).
 
-Returns vessels seen within the active vessel window.
+| Method | Path                     | Description                                                                                  |
+| ------ | ------------------------ | -------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/vessels`           | All vessels seen in the last 15 minutes                                                      |
+| `GET`  | `/api/vessels/:mmsi`     | Full detail for one vessel by its 9-digit MMSI                                               |
+| `GET`  | `/api/vessels/in-bounds` | Vessels within a map viewport (`swLng`, `swLat`, `neLng`, `neLat` query params)              |
+| `GET`  | `/health`                | Liveness check (unauthenticated, unrate-limited)                                             |
+| WS     | `/ws/vessels`            | Real-time vessel stream — snapshot on connect, then `vessel:created`/`vessel:updated` events |
 
----
-
-### Get Vessel By MMSI
-
-```http
-GET /api/vessels/:mmsi
-```
-
-Example:
-
-```http
-GET /api/vessels/123456789
-```
-
----
-
-### Get Vessels Within Bounds
-
-```http
-GET /api/vessels/in-bounds
-```
-
-Query Parameters:
-
-| Parameter | Type   | Description          |
-| --------- | ------ | -------------------- |
-| swLng     | number | South-west longitude |
-| swLat     | number | South-west latitude  |
-| neLng     | number | North-east longitude |
-| neLat     | number | North-east latitude  |
-
-Example:
-
-```http
-GET /api/vessels/in-bounds?swLng=-117.25&swLat=32.70&neLng=-117.20&neLat=32.72
-```
-
----
-
-## WebSocket API
-
-### Endpoint
-
-```text
-ws://localhost:3000/ws/vessels
-```
-
-### Initial Snapshot
-
-Immediately after connecting:
+Every REST response follows the same envelope:
 
 ```json
-{
-  "event": "vessel:snapshot",
-  "data": [...]
-}
-```
-
-### Vessel Created
-
-```json
-{
-  "event": "vessel:created",
-  "data": {}
-}
-```
-
-### Vessel Updated
-
-```json
-{
-  "event": "vessel:updated",
-  "data": {}
-}
+{ "status": "success", "results": 12, "data": { "vessels": [/* ... */] } }
 ```
 
 ---
 
-## Project Structure
+## Project structure
 
-```text
+```
 src/
-├── config/
-├── features/
-│   ├── ais-feed/
-│   ├── cleanup-vessels/
-│   ├── get-all-vessels/
-│   ├── get-vessel/
-│   ├── get-vessels-in-bounds/
-│   └── stream-vessels/
-├── shared/
-│   ├── db/
-│   ├── errors/
-│   ├── events/
-│   ├── logger/
-│   ├── middleware/
-│   └── utils/
-├── app.ts
-└── server.ts
+  config/            # env.ts (validated env vars), constants.ts (AIS type table, thresholds)
+  features/
+    ais-feed/               # TCP/UDP connection, dedup, decoding, persistence
+    get-all-vessels/        # GET /api/vessels
+    get-vessel/              # GET /api/vessels/:mmsi
+    get-vessels-in-bounds/  # GET /api/vessels/in-bounds
+    stream-vessels/          # WebSocket handler
+    cleanup-vessels/         # scheduled job that deletes stale vessel records
+    vessels.router.ts        # composes the above into one Express router
+  shared/
+    db/            # Mongoose connection + Vessel model
+    errors/        # AppError, ValidationError, 404 handler
+    events/        # typed EventEmitter bridging AIS ingestion → WebSocket broadcast
+    logger/        # Pino instance
+    middleware/     # request logging, Zod-based request validation, global error handler
+    utils/         # catchAsync (wraps async route handlers so thrown errors reach Express)
+  app.ts           # Express app: middleware stack, routes
+  server.ts        # HTTP server, WebSocket server, DB connection, graceful shutdown
+docs/
+  architecture.md  # system design, database schema, API decisions, NMEA decoding
 ```
 
 ---
 
-## Testing
+## Notes
 
-Run all tests:
-
-```bash
-npm test
-```
-
-The test suite covers:
-
-- Query validation
-- Vessel retrieval use cases
-- Geospatial filtering logic
-- Business rules
-- Error handling
-
----
-
-## Production Notes
-
-The application:
-
-- Uses MongoDB geospatial indexes for location queries
-- Supports graceful shutdown
-- Automatically reconnects to the AIS feed
-- Streams updates over WebSocket
-- Cleans up stale vessels periodically
-- Shares HTTP and WebSocket traffic on a single port
-
----
-
-## Architecture
-
-Detailed architecture documentation is available in [here](docs/architecture.md).
-
-This document describes:
-
-- AIS ingestion flow
-- Decoder pipeline
-- Deduplication strategy
-- Persistence layer
-- Event-driven update flow
-- WebSocket broadcasting
-- Cleanup process
-- Design decisions and trade-offs
-
-## Demo Video
-
-[Watch the demo video](demo/ais-vessel-map-demo.mp4)
-
-The demo includes:
-
-- Application running with live vessels on the map
-- Hover tooltip functionality
-- Real-time WebSocket updates
-- Smooth vessel marker movement without page refresh
+- If `AIS_FEED_HOST`/`AIS_FEED_PORT` aren't set, the app runs but never receives vessel data — that's expected, not a bug, and it's logged clearly at startup.

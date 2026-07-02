@@ -1,494 +1,168 @@
-# AIS Vessel Map Backend Architecture
+# Architecture
 
-This document describes the architecture, data model, API design, and AIS decoding implementation for the backend service.
-It is written for a senior engineer audience with a focus on clarity, maintainability, and long-term operational quality.
-
----
-
-## 1. System overview
-
-This backend service is responsible for:
-
-- ingesting a live AIS feed over TCP or UDP
-- decoding AIS NMEA data into structured vessel updates
-- persisting the latest vessel state into MongoDB
-- exposing REST APIs for vessel lookup and geographic queries
-- streaming live vessel updates to frontend clients over WebSocket
-- cleaning up stale vessel records automatically
-
-The system is intentionally small and focused: it uses one primary data model (`Vessel`), one persistence store, and two access paths (HTTP and WebSocket).
-
-### Primary runtime components
-
-- `src/server.ts`
-  - bootstraps the app
-  - connects to MongoDB
-  - starts the Express HTTP server
-  - starts the WebSocket server at `/ws/vessels`
-  - starts AIS feed ingestion
-  - starts the stale vessel cleanup job
-
-- `src/app.ts`
-  - configures security, CORS, compression, request logging, and rate limiting
-  - mounts `/health` and `/api/vessels`
-  - applies global error handling and not-found handling
-
-- `src/features/ais-feed/*`
-  - handles AIS feed connection, sentence deduplication, decoding, normalization, and persistence
-
-- `src/shared/db/models/vessel.model.ts`
-  - defines the MongoDB schema for vessel state
-  - defines geospatial indexing for location queries
-
-- `src/features/stream-vessels/stream-vessels.handler.ts`
-  - exposes realtime updates to connected WebSocket clients
-
-- `src/features/cleanup-vessels/cleanup-vessels.job.ts`
-  - removes stale vessels that have not been seen for a configured time window
+This document covers how the system is put together, why the database schema looks the way it does, the reasoning behind the API's design, and exactly how raw NMEA sentences turn into vessel data on the map. For setup and run instructions, see the main [README](../README.md).
 
 ---
 
-## 2. Architecture diagram
+## 1. System architecture
 
-### Logical flow
+### Overview
+
+![System architecture diagram: AIS feed flows through a TCP/UDP socket, sentence deduper, decoder, and persistence layer into MongoDB, which is read by both the WebSocket broadcaster and the REST API; a cleanup job separately prunes stale records; the frontend receives both WebSocket events and REST responses.](./architecture-diagram.svg)
+
+The numbered badges above the ingestion pipeline (1–4) correspond to the step-by-step walkthrough in [§4, NMEA decoding implementation](#4-nmea-decoding-implementation) below.
+
+Two things are worth noticing about this shape. First, **ingestion and delivery are decoupled through an event emitter, not a direct function call.** The AIS pipeline doesn't know WebSocket clients exist — it just emits an event after a successful database write. The WebSocket handler is just one listener among potentially several; a second consumer (metrics, alerting, an audit log) could subscribe to the same events without either side changing. Second, **the REST API and the WebSocket stream both read from the same MongoDB collection as their single source of truth** — there's no separate in-memory cache that could drift out of sync with what's actually persisted.
+
+### Folder structure
+
+The code is organized around **vertical feature slices** rather than horizontal layers like "controllers" and "services." Each feature under `src/features/` owns everything it needs — router, usecase, Zod schema, and tests — end to end:
 
 ```
-[AIS Source TCP/UDP] --> [AIS Feed Connection] --> [Sentence Deduper] --> [AIS Decoder] --> [Normalize] --> [MongoDB Vessel Collection]
-                                                                            |
-                                                                            +--> [Event Emitter] --> [WebSocket Live Stream]
-
-[Express HTTP] --> [GET /api/vessels] --> [Active Vessel Query]
-                 [GET /api/vessels/:mmsi] --> [Single Vessel Lookup]
-                 [GET /api/vessels/in-bounds] --> [Geospatial Query]
+src/
+  config/            # env.ts (validated env vars), constants.ts (AIS type table, thresholds)
+  features/
+    ais-feed/               # TCP/UDP connection, dedup, decoding, persistence
+    get-all-vessels/        # GET /api/vessels
+    get-vessel/              # GET /api/vessels/:mmsi
+    get-vessels-in-bounds/  # GET /api/vessels/in-bounds
+    stream-vessels/          # WebSocket handler
+    cleanup-vessels/         # scheduled job that deletes stale vessel records
+    vessels.router.ts        # composes the above into one Express router
+  shared/
+    db/            # Mongoose connection + Vessel model
+    errors/        # AppError, ValidationError, 404 handler
+    events/        # typed EventEmitter bridging AIS ingestion → WebSocket broadcast
+    logger/        # Pino instance
+    middleware/     # request logging, Zod-based request validation, global error handler
+    utils/         # catchAsync (wraps async route handlers so thrown errors reach Express)
+  app.ts           # Express app: middleware stack, routes
+  server.ts        # HTTP server, WebSocket server, DB connection, graceful shutdown
 ```
 
-### Why this shape
+A usecase never imports Express types, and a router never talks to Mongoose directly — the handler is the only thing that touches both. That boundary is what makes each usecase testable with a mocked model and no HTTP layer involved at all (see the `.test.ts` files alongside each usecase).
 
-- Feed ingestion is separated from persistence and API access.
-- Live updates are event-driven, so the WebSocket layer stays lightweight.
-- MongoDB holds the canonical state of each vessel.
-- The API only returns active vessels, limiting stale data exposure.
+### Process lifecycle
 
----
+`server.ts` is the only file that knows about startup and shutdown ordering. On boot: connect to MongoDB → build the Express app → attach a `ws` WebSocket server to the _same_ HTTP server (one port, not two) → start listening → start the AIS feed connection → start the cleanup job.
 
-## 3. Database schema design
+On `SIGTERM`/`SIGINT`, that order runs in reverse: stop the AIS feed and cleanup job first (so nothing new gets written mid-shutdown), tell every connected WebSocket client the server is going away (close code `1001`, not just a silently dropped connection), close the HTTP server, then disconnect from MongoDB. A 10-second watchdog timer forces an exit if any step hangs, so a stuck connection can't prevent a deploy from completing.
 
-The system uses a single MongoDB collection: `Vessel`.
-
-### Vessel document shape
-
-The `Vessel` schema is defined in `src/shared/db/models/vessel.model.ts`.
-It stores the current best-known state for each vessel.
-
-Key fields:
-
-- `mmsi` (String, unique)
-- `name` (String | null)
-- `location` (GeoJSON Point)
-- `sog` (Number | null)
-- `cog` (Number | null)
-- `heading` (Number | null)
-- `vesselType` (Number | null)
-- `navStatus` (Number | null)
-- `rot` (Number | null)
-- `callsign` (String | null)
-- `imo` (Number | null)
-- `destination` (String | null)
-- `etaMonth`, `etaDay`, `etaHour`, `etaMinute` (Number | null)
-- `draught` (Number | null)
-- `dimA`, `dimB`, `dimC`, `dimD` (Number | null)
-- `classB` (Boolean)
-- `lastSeen` (Date)
-- `rawSentence` (String | null)
-- `createdAt`, `updatedAt` (auto timestamps)
-
-### Index design
-
-The schema defines three indexes:
-
-- `location: 2dsphere`
-  - Enables geospatial queries for bounding-box filtering.
-  - Supports queries used by `/api/vessels/in-bounds`.
-
-- `lastSeen`
-  - Drives active vessel filtering and cleanup decisions.
-
-- `navStatus`
-  - Supports optional future filtering by navigation status.
-
-### Design rationale
-
-- A single collection keeps the model easy to reason about.
-- The vessel document is effectively a materialized view of the latest AIS state.
-- `lastSeen` is the truth for freshness: it is updated for every received AIS message.
-- `rawSentence` is stored for traceability and debugging.
-- Geospatial indexing is required for efficient map-based queries.
+The WebSocket layer also runs a 30-second heartbeat independent of shutdown: every client gets pinged, and any client that didn't respond to the _previous_ ping gets terminated. This catches connections that went silently dead (closed laptop lid, dropped mobile network) without waiting on a TCP-level timeout that can take minutes to fire on its own.
 
 ---
 
-## 4. API design and decisions
+## 2. Database schema design
 
-The public API is intentionally small and predictable. It is designed for frontend mapping clients and lightweight analytics.
+A single `Vessel` collection in MongoDB, keyed by a unique `mmsi`:
 
-### API surface
+| Field group   | Fields                                                                                                                             | Notes                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Identity      | `mmsi`                                                                                                                             | Unique index — this is what every upsert matches on                      |
+| Position      | `location`, `sog`, `cog`, `heading`                                                                                                | `location` is a GeoJSON `Point`, `[lon, lat]` order per the GeoJSON spec |
+| Voyage/static | `name`, `vesselType`, `navStatus`, `rot`, `callsign`, `imo`, `destination`, ETA fields, `draught`, four dimension fields, `classB` | All nullable — a vessel might have only sent a position report so far    |
+| Bookkeeping   | `lastSeen`, `rawSentence`, `createdAt`/`updatedAt`                                                                                 | `lastSeen` drives both the active-vessel filter and the cleanup job      |
 
-- `GET /health`
-  - health check endpoint
-  - returns service status and timestamp
+**Indexes:**
 
-- `GET /api/vessels`
-  - returns all vessels seen within the active vessel window
-  - selects only summary fields
-  - excludes raw debugging data
+- `location: '2dsphere'` (sparse) — supports the `in-bounds` endpoint's `$geoWithin: { $box: [...] }` query. Sparse because a vessel that's only sent a static report has no `location` yet.
+- `lastSeen: 1` — supports both the 15-minute active-vessel filter used by every read endpoint, and the 24-hour stale-vessel cleanup query.
+- `navStatus: 1` — not yet used by an endpoint, but included for a filter-by-status feature that's a likely next addition (e.g., "show only underway vessels").
 
-- `GET /api/vessels/:mmsi`
-  - returns the full vessel detail document for a single MMSI
-  - validates that `mmsi` is a 9-digit string
-  - returns `404` when missing
+**Why upsert-by-MMSI instead of insert-then-update:** `applyVesselUpdate` calls `findOneAndUpdate({ mmsi }, { $set: setFields }, { upsert: true })` in a single atomic operation. This is what the assignment means by "handle vessel position updates" and "handle duplicate MMSI entries" — there's no separate "does this vessel exist?" check followed by a conditional insert or update, which would leave a window for two updates to the same vessel to race each other. `setFields` is also built to contain _only_ the fields the incoming message actually carried, so a static-only report (like a type-24 message with no position) can never accidentally null out a vessel's last known coordinates.
 
-- `GET /api/vessels/in-bounds`
-  - returns active vessels inside a bounding box
-  - requires `swLng`, `swLat`, `neLng`, and `neLat`
-  - validates coordinate ranges and box ordering
+**Why a 15-minute active window instead of returning every vessel ever seen:** AIS coverage is regional and vessels move in and out of range constantly. Without a recency filter, the map would accumulate every vessel the feed has ever mentioned, including ones that sailed out of range hours ago. `ACTIVE_VESSEL_WINDOW_MS` (15 minutes) keeps every read endpoint showing only vessels plausibly still nearby.
 
-- `WS /ws/vessels`
-  - provides a real-time vessel snapshot and live updates
-
-### Design choices
-
-- Only `GET` endpoints are exposed.
-- The API does not mutate vessel state; state changes are driven by the AIS feed.
-- Request validation is centralized in `src/shared/middleware/validate.middleware.ts` using `zod`.
-- Errors are handled by the global error middleware in `src/shared/middleware/error.middleware.ts`.
-- Rate limiting is applied to all `/api` requests with `express-rate-limit`.
-- CORS is configured with origin control and only `GET` allowed.
-
-### Active vessel window
-
-Active vessels are defined by `ACTIVE_VESSEL_WINDOW_MS` in `src/config/constants.ts`.
-The current value is `15 minutes`.
-This means the API returns only vessels that have been observed recently.
-
-### Route validation details
-
-- `GET /api/vessels/:mmsi`
-  - `mmsi` must match `^\d{9}$`
-
-- `GET /api/vessels/in-bounds`
-  - longitudes must be between `-180` and `180`
-  - latitudes must be between `-90` and `90`
-  - `swLng < neLng`
-  - `swLat < neLat`
-
-### Response shapes
-
-`/api/vessels` and `/api/vessels/in-bounds` return `VesselSummary` objects.
-`/api/vessels/:mmsi` returns a `VesselDetail` object.
-Validation schemas are defined in:
-
-- `src/features/get-all-vessels/get-all-vessels.types.ts`
-- `src/features/get-vessel/get-vessel-by-mmsi.types.ts`
-
-This keeps the API contract explicit and consistent.
+**Why a separate 24-hour cleanup job on top of that:** the active-window filter hides old vessels from API responses, but the records still sit in MongoDB indefinitely unless something removes them. `cleanup-vessels.job.ts` runs every 30 minutes and permanently deletes any vessel untouched for 24+ hours, so the collection doesn't grow without bound over a long-running deployment.
 
 ---
 
-## 5. NMEA / AIS decoding implementation
+## 3. API design decisions
 
-This backend does not parse raw NMEA manually. It relies on a specialized AIS decoding library and a small normalization layer.
+### Endpoints
 
-### Feed input
+| Method | Path                     | Description                                                                     |
+| ------ | ------------------------ | ------------------------------------------------------------------------------- |
+| `GET`  | `/api/vessels`           | All vessels seen in the last 15 minutes                                         |
+| `GET`  | `/api/vessels/:mmsi`     | Full detail for one vessel by its 9-digit MMSI                                  |
+| `GET`  | `/api/vessels/in-bounds` | Vessels within a map viewport (`swLng`, `swLat`, `neLng`, `neLat` query params) |
+| `GET`  | `/health`                | Liveness check — unauthenticated, unrate-limited                                |
+| WS     | `/ws/vessels`            | Real-time vessel stream (see below)                                             |
 
-The feed source is configured in `src/config/env.ts`:
+Every REST response follows the same envelope — `{ status, results?, data }` — so the frontend has exactly one shape to parse regardless of which endpoint it called.
 
-- `AIS_FEED_HOST`
-- `AIS_FEED_PORT`
-- `AIS_FEED_PROTOCOL` (`tcp` or `udp`)
-- `AIS_FEED_RECONNECT_DELAY_MS`
+### Request validation
 
-The feed startup happens in `src/features/ais-feed/ais-feed.bootstrap.ts`.
-If configuration is missing, the feed is skipped gracefully.
+`validatedRoute` wraps a handler with Zod schemas for `body`/`query`/`params`, parses the request against them before the handler ever runs, and attaches the validated (and type-coerced) result to the request object. A malformed request — say, an `mmsi` that isn't exactly 9 digits, or an `in-bounds` box where the southwest corner isn't actually southwest of the northeast one — never reaches business logic at all; it's rejected at the boundary with a structured 400 response listing exactly which field failed and why.
 
-### Connection layer
+### Response validation
 
-`src/features/ais-feed/ais-feed-connection.service.ts`
+Validation isn't only applied to inbound requests. `getAllVessels`, `getVesselByMmsi`, and `getVesselsInBounds` all run their MongoDB results through a Zod schema (`vesselSummarySchema` / `vesselDetailSchema`) before returning them. This means a schema drift in the database — a field that became nullable, a type that changed — surfaces immediately as a clear parse error in the logs, instead of silently shipping an unexpected shape to the frontend and breaking something two layers downstream.
 
-- supports TCP and UDP transport
-- for TCP, it buffers incoming chunks and splits on `\n` / `\r\n`
-- for UDP, it splits each datagram on newline boundaries
-- it hands each trimmed line to the deduper
-- it reconnects automatically after errors or disconnects
+### Error handling
 
-This makes the connection layer robust for noisy AIS sources.
+`globalErrorHandler` recognizes five distinct failure types and normalizes all of them into the same `{ status, message }` shape:
 
-### Deduplication
+- `AppError` — the app's own operational errors (404s, validation failures), passed through as-is.
+- Mongoose `CastError` — an invalid value for a typed field (e.g., a non-numeric MMSI).
+- Mongoose `ValidationError` — a document that failed schema validation on write.
+- MongoDB duplicate-key error (code `11000`) — a race that got past the upsert logic.
+- `ZodError` — validation failures that escape the `validatedRoute` wrapper.
 
-`src/features/ais-feed/ais-feed-dedup.service.ts`
+In development, responses include the stack trace. In production, only `AppError`'s (operational, expected errors) return their message to the client; anything else is logged internally with full detail and the client sees a generic "Something went wrong" — so an unexpected internal failure never leaks implementation details to an API consumer.
 
-- AIS feeds often repeat the same raw sentence multiple times
-- deduplication happens before decoding
-- this avoids duplicate updates and unnecessary database writes
-- the deduper key is the raw sentence text itself
+### Rate limiting and security headers
 
-### Decoder layer
+Every `/api` route sits behind `express-rate-limit` (300 requests per 15-minute window per client). `helmet` sets standard security headers, `cors` is scoped to an explicit origin allowlist read from `ALLOWED_ORIGINS`, and `hpp` guards against HTTP parameter pollution (e.g., `?swLng=1&swLng=2` resolving unpredictably). CORS is also restricted to `GET` only, since this API doesn't expose any mutating endpoints to the frontend.
 
-`src/features/ais-feed/ais-feed-decoder.service.ts`
+### WebSocket protocol
 
-- wraps the third-party `ais-stream-decoder` module
-- listens for `data` events from the decoder
-- parses the decoder output with a `zod` schema
-- normalizes the output into a domain-friendly shape
-- extracts the last raw sentence from `parsed.sentences`
+On connect, the server immediately sends a full snapshot of every currently active vessel:
 
-### Normalization rules
+```json
+{ "event": "vessel:snapshot", "data": [/* VesselSummary[] */] }
+```
 
-The system only keeps AIS message types it actively understands.
-Supported types are derived from a single source of truth in `src/config/constants.ts`.
+After that, one event per change, as it happens:
 
-Supported AIS message kinds:
+```json
+{ "event": "vessel:created", "data": { /* VesselSummary */ } }
+{ "event": "vessel:updated", "data": { /* VesselSummary */ } }
+```
 
-- position reports: `1`, `2`, `3`, `18`, `19`, `27`
-- static reports: `5`, `24`
-
-`24` is handled carefully because it is a multipart static report:
-
-- Part A contains the vessel name
-- Part B contains callsign, dimensions, and type information
-
-The normalizer preserves:
-
-- vessel identity fields (`mmsi`, `callsign`, `imo`, `name`)
-- position fields (`lat`, `lon`, `sog`, `cog`, `heading`)
-- vessel attributes (`vesselType`, `navStatus`, `rot`, `destination`, `eta`, `draught`, `dimensions`)
-- class B indicator derived from message type
-
-It ignores unsupported AIS message types and silently drops invalid messages.
+Sending a full snapshot on **every** connection — including reconnects after a dropped socket — is a deliberate design choice: it means the frontend never needs a separate REST call to resync after a disconnect. Whatever the client's state was before, the fresh snapshot fully replaces it, so there's no window where the client is running on stale partial data while waiting for a resync request to complete.
 
 ---
 
-## 6. Failure handling and recovery
+## 4. NMEA decoding implementation
 
-The service is designed to tolerate transient failures without requiring
-manual intervention.
+Turning a raw AIS feed into vessel data happens in five steps, each owned by its own file:
 
-### AIS feed disconnects
+**1. Line reconstruction (`ais-feed-connection.service.ts`).**
+AIS feeds arrive over a raw TCP or UDP socket, not a message-oriented protocol — a single `data` event can contain half a sentence, several sentences, or a sentence split across two events. For TCP, incoming bytes are appended to a buffer and split on newlines; anything after the last newline is held back as a partial line until the rest of it arrives in a future chunk. UDP framing is simpler (each datagram is typically already a complete line or set of lines), but the same line-splitting logic is reused for consistency.
 
-The feed connection layer automatically reconnects after
-`AIS_FEED_RECONNECT_DELAY_MS`.
+**2. Deduplication (`ais-feed-dedup.service.ts`).**
+Real AIS aggregators commonly forward the exact same sentence more than once — the same broadcast picked up by multiple shore-station receivers and relayed twice. This is filtered _before_ decoding, using a 5-second rolling window keyed on the raw sentence text itself. Deduplication has to happen at this stage rather than after decoding: by the time a duplicate reaches the decoder, its internal state for reassembling multipart sentences may have already consumed part of the pair, corrupting reconstruction of a _different_, legitimate multipart message arriving in between.
 
-Temporary network failures therefore do not require process restarts.
+**3. Decoding and validation (`ais-feed-decoder.service.ts`).**
+Surviving lines are written into `ais-stream-decoder`, which parses the NMEA armor and reassembles multipart sentences into a single decoded message. Because that library ships with inconsistent CJS/ESM interop across environments, the module's export is resolved defensively at import time — checking for a constructor at `.default` or `.default.default` — and the module throws a clear error immediately at startup if neither shape matches, rather than failing confusingly on the first incoming message. Every decoded message is then parsed against a Zod schema (`rawAisMessageSchema`) before touching any domain logic; a message that doesn't match is logged and dropped, so a decoder bug or unexpected message variant can't crash the ingestion pipeline or write garbage into MongoDB.
 
-### Invalid AIS messages
+**4. Classification and normalization (`normalizeMessage`).**
+Each validated message is classified as a position report or a static report using the single lookup table in `constants.ts` (`AIS_MESSAGE_TYPES`), which also determines whether the transmitting vessel is AIS Class A or Class B. Type 24 (Class B static data) is handled as a special case: it's transmitted as two separate single-sentence messages — Part A carries the vessel name, Part B carries callsign, dimensions, and vessel type — so the normalizer only writes name fields when `partNum === 0` and only writes callsign/dimension fields when `partNum === 1`. Without this split, a Part B message arriving after Part A would overwrite the name field with nothing, since Part B's raw payload never contains one.
 
-Malformed or unsupported AIS messages are logged and discarded.
+**5. Persistence (`applyVesselUpdate`, covered in [Database schema design](#2-database-schema-design)).**
+The normalized `VesselUpdate` is upserted into MongoDB by MMSI, and a `vessel:created`/`vessel:updated` event is emitted for the WebSocket layer to pick up.
 
-The service continues processing subsequent messages.
+### Fields decoded
 
-### Database failures
+| Field                                                | Source AIS message types                       |
+| ---------------------------------------------------- | ---------------------------------------------- |
+| MMSI                                                 | All supported types                            |
+| Position (lat/lon)                                   | 1, 2, 3, 18, 19, 27                            |
+| SOG / COG / Heading                                  | 1, 2, 3, 18, 19, 27                            |
+| Vessel name                                          | 5 (Class A static), 24 Part A (Class B static) |
+| Vessel type                                          | 5, 24 Part B                                   |
+| Nav status, rate of turn                             | 1, 2, 3                                        |
+| Callsign, IMO, destination, ETA, draught, dimensions | 5, 24 Part B                                   |
 
-MongoDB connection events are monitored through Mongoose connection
-listeners.
-
-Connection errors, disconnects, and reconnections are logged to aid
-operational debugging.
-
-### WebSocket client failures
-
-Heartbeat ping/pong checks run every 30 seconds.
-
-Clients that stop responding are terminated automatically to prevent
-resource leaks.
-
----
-
-## 7. Observability
-
-The service uses structured logging through `pino`.
-
-Log events include:
-
-- AIS feed connection lifecycle
-- database connection state changes
-- HTTP request completion
-- websocket client connections
-- cleanup job execution
-- application startup and shutdown
-
-Request logs include:
-
-- request id
-- method
-- path
-- status code
-- duration
-- client IP
-
-Sensitive fields such as authentication headers, cookies, passwords, and
-API keys are automatically redacted.
----
-
-## 8. Security considerations
-
-The HTTP API applies several defensive middleware layers:
-
-- `helmet` for secure HTTP headers
-- `cors` with explicit origin allowlists
-- `hpp` to prevent HTTP parameter pollution
-- `compression` for response optimization
-- `express-rate-limit` for abuse protection
-
-Only `GET` endpoints are exposed.
-
-The backend does not provide public mutation endpoints; vessel state is
-derived exclusively from the AIS feed.
-
----
-
-## 9. Persistence flow
-
-`src/features/ais-feed/ais-feed.usecase.ts`
-
-- receives normalized `VesselUpdate`
-- maps the update to an atomic MongoDB update payload
-- `findOneAndUpdate` with `upsert: true`
-- stores `lastSeen` as the receive timestamp
-- stores `rawSentence` for traceability
-- emits either `vessel:created` or `vessel:updated`
-
-This design means each vessel document is the current state, not a log of history.
-
-### Why `findOneAndUpdate` with upsert
-
-- avoids duplicate vessel documents
-- updates only changed fields
-- makes persistence idempotent for repeated AIS messages
-
-### Why store `rawSentence`
-
-- gives operators a way to inspect the literal AIS input that produced the current state
-- useful for debugging feed decoding, checksum mismatches, or anomalous vessels
-
----
-
-## 10. Realtime streaming
-
-The live stream is implemented in `src/features/stream-vessels/stream-vessels.handler.ts`.
-
-WebSocket behavior:
-
-- on connect, send a `vessel:snapshot` event with current active vessels
-- then broadcast `vessel:created` and `vessel:updated` events
-- use heartbeat ping/pong every 30 seconds
-- remove listeners when the WebSocket server closes
-
-This approach provides a reliable first snapshot plus incremental updates.
-
-### Event bus
-
-The broadcasting layer listens to `vesselEmitter`:
-
-- `vesselEmitter` is a typed singleton event emitter
-- it is defined in `src/shared/events/vessel.emitter.ts`
-- it supports two event types: `vessel:updated` and `vessel:created`
-
-The emitter decouples persistence from streaming, which is a high-quality separation of concerns.
-
----
-
-## 11. Cleanup and operational hygiene
-
-Stale data cleanup is implemented in `src/features/cleanup-vessels/cleanup-vessels.job.ts`.
-
-- vessels not seen for `STALE_VESSEL_THRESHOLD_MS` are deleted
-- the threshold is currently 24 hours
-- cleanup runs immediately on startup and then every 30 minutes
-
-This keeps the database from accumulating dead vessels and makes active-vessel queries meaningful.
-
----
-
-## 12. Design decisions
-
-### Single source of truth
-
-- `src/config/constants.ts` defines supported AIS message types in one table.
-- all derived arrays (`POSITION_REPORT_TYPES`, `STATIC_REPORT_TYPES`, `CLASS_B_REPORT_TYPES`) come from that table.
-
-This prevents inconsistencies and makes feature extension safe.
-
-### Clear separation of concerns
-
-- connection, deduping, decoding, normalization, persistence, API, and streaming are all separate modules.
-- each feature owns one responsibility.
-
-### Defensive validation
-
-- `zod` validates both incoming HTTP requests and AIS decoder output.
-- request validation is centralized.
-- invalid AIS sentences are logged and dropped without crashing the service.
-
-### Operational resilience
-
-- network reconnect logic for AIS feed
-- WebSocket heartbeat to drop dead clients
-- global error handler for HTTP
-- rate limiting and security middleware on Express
-
-### Simplicity in the data model
-
-- a single `Vessel` collection avoids join complexity.
-- position snapshots are current-state only.
-- stale cleanup keeps the model bounded.
-
----
-
-## 13. Testing strategy
-
-The project currently focuses on unit testing.
-
-Testing principles:
-
-- database access is mocked
-- use cases are tested independently from Express handlers
-- validation behavior is tested through Zod schemas
-- query construction is verified explicitly
-
-Examples include:
-
-- active vessel filtering
-- geospatial bounding box queries
-- empty result handling
-- coordinate ordering validation
-
-The test suite can be extended in the future with:
-
-- integration tests using an in-memory MongoDB instance
-- websocket lifecycle tests
-- end-to-end AIS feed simulations
-
----
-
-## 14. Key file map
-
-- `src/server.ts` — startup, DB connect, HTTP + WS server, feed + cleanup lifecycle
-- `src/app.ts` — Express app configuration and routes
-- `src/features/vessels.router.ts` — route composition
-- `src/features/get-all-vessels/*` — list active vessels
-- `src/features/get-vessel/*` — vessel lookup by MMSI
-- `src/features/get-vessels-in-bounds/*` — spatial query by bounding box
-- `src/features/ais-feed/*` — feed connection, dedupe, decode, update persistence
-- `src/features/stream-vessels/stream-vessels.handler.ts` — live websocket broadcasting
-- `src/shared/db/models/vessel.model.ts` — MongoDB schema and indexes
-- `src/shared/middleware/validate.middleware.ts` — schema-driven request validation
-- `src/shared/events/vessel.emitter.ts` — typed event bus for vessel updates
-
----
-
-## 15. Conclusions
-
-This backend is built as a long-term, maintainable service:
-
-- it accepts live AIS feeds and keeps a canonical vessel state
-- it exposes a stable API and a live stream for frontend clients
-- it is defensive about bad input and stale data
-- it keeps domain logic small, explicit, and traceable
+This is not the full ITU-R M.1371 message catalogue — only the types this pipeline actively decodes are listed in `AIS_MESSAGE_TYPES`. Adding support for a new type is a one-line addition to that table, and every derived list (`POSITION_REPORT_TYPES`, `STATIC_REPORT_TYPES`, `CLASS_B_REPORT_TYPES`) picks it up automatically.
